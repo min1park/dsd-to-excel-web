@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DSD to Excel 변환기</title>
+    <!-- 디자인을 예쁘게 만들어주는 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 브라우저에서 파이썬을 실행하게 해주는 Pyodide 라이브러리 -->
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
+
+    <div class="bg-white p-8 rounded-xl shadow-lg max-w-md w-full text-center">
+        <h1 class="text-3xl font-bold text-gray-800 mb-2">📊 DART DSD → Excel</h1>
+        <p class="text-gray-500 mb-6 text-sm">별도의 서버 가입 없이 브라우저에서 안전하게 직접 변환됩니다.</p>
+
+        <!-- 파이썬 엔진 로딩 안내 -->
+        <div id="loading" class="mb-4 text-blue-600 font-bold animate-pulse">
+            🔄 접속 환경을 설정 중입니다... (최초 1회 약 3~5초 소요)
+        </div>
+
+        <!-- 메인 인터페이스 (초기에는 숨김) -->
+        <div id="app-ui" style="display: none;">
+            <div class="border-2 border-dashed border-gray-300 rounded-lg p-4 mb-4 hover:bg-gray-50 transition">
+                <input type="file" id="fileInput" accept=".dsd" class="block w-full text-sm text-gray-500
+                  file:mr-4 file:py-2 file:px-4
+                  file:rounded-md file:border-0
+                  file:text-sm file:font-semibold
+                  file:bg-blue-50 file:text-blue-700
+                  hover:file:bg-blue-100 cursor-pointer">
+            </div>
+            
+            <button id="convertBtn" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-md hover:bg-blue-700 transition shadow-md disabled:bg-gray-400">
+                🚀 엑셀로 변환하기
+            </button>
+        </div>
+
+        <div id="status" class="mt-4 text-sm font-medium text-gray-700 whitespace-pre-line"></div>
+
+        <a id="downloadLink" class="mt-4 hidden w-full bg-green-500 text-white font-bold py-3 px-4 rounded-md hover:bg-green-600 transition shadow-md" download="변환완료.xlsx">
+            📥 엑셀 파일 다운로드
+        </a>
+    </div>
+
+    <script>
+        let pyodideInstance;
+
+        // 1. 파이썬 환경(Pyodide) 초기화
+        async function initPyodide() {
+            try {
+                // 파이썬 엔진 로드
+                pyodideInstance = await loadPyodide();
+                
+                // 엑셀 변환에 필요한 파이썬 라이브러리(openpyxl) 설치
+                await pyodideInstance.loadPackage("micropip");
+                const micropip = pyodideInstance.pyimport("micropip");
+                await micropip.install("openpyxl");
+
+                // 깃허브에 함께 올린 dsd_to_excel.py 코드를 가져와서 가상 환경에 저장
+                const response = await fetch('./dsd_to_excel.py');
+                if (!response.ok) throw new Error("dsd_to_excel.py 파일을 찾을 수 없습니다.");
+                const pyCode = await response.text();
+                pyodideInstance.FS.writeFile('dsd_to_excel.py', pyCode);
+                
+                // 로딩 완료 후 UI 표시
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('app-ui').style.display = 'block';
+            } catch (err) {
+                document.getElementById('loading').innerText = "❌ 환경 설정 실패: " + err.message;
+            }
+        }
+
+        initPyodide();
+
+        // 2. 변환 버튼 클릭 시 동작
+        document.getElementById('convertBtn').addEventListener('click', async () => {
+            const fileInput = document.getElementById('fileInput');
+            const statusDiv = document.getElementById('status');
+            const downloadLink = document.getElementById('downloadLink');
+
+            if (fileInput.files.length === 0) {
+                statusDiv.innerText = "⚠️ DSD 파일을 먼저 선택해주세요.";
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const originalName = file.name.replace('.dsd', '');
+            
+            statusDiv.innerText = "⏳ 파일을 분석하고 변환하는 중... 잠시만 기다려주세요.";
+            downloadLink.classList.add('hidden');
+            document.getElementById('convertBtn').disabled = true;
+
+            try {
+                // 사용자가 올린 파일을 브라우저 메모리(가상 파일시스템)에 저장
+                const arrayBuffer = await file.arrayBuffer();
+                const uint8Array = new Uint8Array(arrayBuffer);
+                pyodideInstance.FS.writeFile('input.dsd', uint8Array);
+
+                // 파이썬 함수 실행! (dsd_to_excel.py 안에 있는 함수 호출)
+                await pyodideInstance.runPythonAsync(`
+                    import sys
+                    from dsd_to_excel import convert_dsd_to_excel
+                    
+                    # 캐시 방지를 위해 모듈 다시 로드
+                    if 'dsd_to_excel' in sys.modules:
+                        import importlib
+                        importlib.reload(sys.modules['dsd_to_excel'])
+                        
+                    # 엑셀 변환 함수 실행
+                    convert_dsd_to_excel('input.dsd', 'output.xlsx')
+                `);
+
+                // 만들어진 엑셀 파일을 가져오기
+                const outputUint8Array = pyodideInstance.FS.readFile('output.xlsx');
+                
+                // 다운로드 링크 생성
+                const blob = new Blob([outputUint8Array], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                const url = URL.createObjectURL(blob);
+                
+                downloadLink.href = url;
+                downloadLink.download = `${originalName}_변환.xlsx`;
+                downloadLink.classList.remove('hidden');
+                statusDiv.innerText = "🎉 성공적으로 변환되었습니다!\n아래 버튼을 눌러 저장하세요.";
+                
+            } catch (err) {
+                console.error(err);
+                statusDiv.innerText = "❌ 변환 중 오류가 발생했습니다:\n" + err.message;
+            } finally {
+                document.getElementById('convertBtn').disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
